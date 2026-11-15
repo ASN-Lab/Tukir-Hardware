@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <core_esp8266_i2s.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h> // Tambahkan SSL
 #include <PubSubClient.h>
@@ -16,8 +17,10 @@ bool shouldPublishTelemetry = false;
 // ---------------------------------------------------------------------------
 // KONFIGURASI MQTT (Detail akan diisi lewat WiFiManager atau hardcode awal)
 // ---------------------------------------------------------------------------
-const char* mqtt_server = ""; // Kosongkan, nanti bisa diset via WiFiManager atau update manual
-int mqtt_port = 8883;         // SSL Port
+const char* mqtt_server = "q3c13c67.ala.asia-southeast1.emqxsl.com";
+int mqtt_port = 8883;
+const char* mqtt_user = "ASN-Lab";
+const char* mqtt_pass = "amphib1an";
 
 WiFiClientSecure espClient;   // Gunakan Secure Client
 PubSubClient client(espClient);
@@ -25,7 +28,7 @@ PubSubClient client(espClient);
 const char* DEVICE_CODE     = "TUKIR-GARAGE-01";
 const char* TOPIC_TELEMETRY = "tukir/TUKIR-GARAGE-01/telemetry";
 const char* TOPIC_STATUS    = "tukir/TUKIR-GARAGE-01/status";
-const char* TOPIC_CONTROL   = "tukir/TUKIR-GARAGE-01/control";
+const char* TOPIC_CONTROL   = "tukir/TUKIR-GARAGE-01/command";
 
 // ---------------------------------------------------------------------------
 // PIN MAPPING (FIXED: Pindah Servo ke D5 untuk cegah konflik I2S GPIO2)
@@ -141,17 +144,8 @@ void computeFuzzyLogic(float rDist, float sDist) {
 // AUDIO DIGITAL I2S
 // ---------------------------------------------------------------------------
 void playI2STone(int frequencyHz, int durationMs) {
-  int sampleRate = 22050;
-  int numSamples = (sampleRate * durationMs) / 1000;
-  int32_t amplitude = 80000000; 
-
-  for (int i = 0; i < numSamples; i++) {
-    float t = (float)i / sampleRate;
-    int32_t sample = (int32_t)(amplitude * sin(2.0 * PI * frequencyHz * t));
-    uint32_t leftChannel = (uint32_t)sample;
-    uint32_t rightChannel = (uint32_t)sample;
-    i2s_write_sample((leftChannel & 0xFFFF0000) | ((rightChannel >> 16) & 0xFFFF));
-  }
+  // Fitur Audio dinonaktifkan untuk stabilitas sistem PWM (Servo/LED)
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +211,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 void setup_wifi() {
   delay(10);
+  const char* ssid = "15";
+  const char* password = "jqeq6496";
   Serial.print("\nConnecting to WiFi: ");
   Serial.println(ssid);
   WiFi.mode(WIFI_STA);
@@ -231,9 +227,10 @@ void setup_wifi() {
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Connecting MQTT...");
+    yield(); // Beri waktu OS ESP8266
     String clientId = "Tukir-HW-";
     clientId += String(random(0xffff), HEX);
-    if (client.connect(clientId.c_str(), TOPIC_STATUS, 0, true, "{\"status\":\"OFFLINE\"}")) {
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass, TOPIC_STATUS, 0, true, "{\"status\":\"OFFLINE\"}")) {
       Serial.println("Connected!");
       client.publish(TOPIC_STATUS, "{\"status\":\"ONLINE\"}", true);
       client.subscribe(TOPIC_CONTROL);
@@ -276,12 +273,15 @@ void setup() {
   garageServo.attach(SERVO_PIN);
   garageServo.write(0); 
 
-  i2s_begin();
-  i2s_set_rate(22050);
+  // i2s_begin(); // Dinonaktifkan untuk mencegah konflik PWM Servo
+  // i2s_set_rate(22050); // Dinonaktifkan
   bootTestLED();
 
   setup_wifi();
-  client.setServer(mqtt_server, 1883);
+  espClient.setInsecure(); 
+  espClient.setBufferSizes(512, 512); // Batasi buffer TLS agar RAM tidak habis
+  client.setServer(mqtt_server, mqtt_port);
+  client.setBufferSize(512); 
   client.setCallback(callback);
 }
 
@@ -312,6 +312,12 @@ void loop() {
     publishTelemetry();
     shouldPublishTelemetry = false;
   }
+
+  // Selalu baca sensor untuk update telemetry real-time
+  distRear = readUltrasonic(ECHO_REAR);
+  delay(10);
+  distSide = readUltrasonic(ECHO_SIDE);
+  computeFuzzyLogic(distRear, distSide);
 
   switch (currentState) {
     case STATE_CLOSED:
